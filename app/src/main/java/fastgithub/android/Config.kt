@@ -11,6 +11,17 @@ data class Node(
     var state: String = "--"
 ) {
     val usable: Boolean get() = state == "GOOD" || state == "WEAK" || state == "QUICK" || state == "CACHE"
+
+    /**
+     * 能否写进 DNS 应答。
+     * 网页型域名（github.com 等）必须真的返回过 200~399；QUICK / CACHE 这种"没验过 HTTP"
+     * 的状态一律不许直接拿去应答，否则就是"界面显示已加速、网页 404"。
+     */
+    val acceptable: Boolean
+        get() = when {
+            Config.isStrict(host) -> state == "GOOD"
+            else -> state == "GOOD" || state == "WEAK"
+        }
     val stateText: String
         get() = when (state) {
             "GOOD" -> "可用 · $ms ms"
@@ -36,20 +47,18 @@ data class Node(
 
 object Config {
     const val AppName = "FastGithub"
-    const val Version = "1.2.1"
+    const val Version = "1.2.2Criticalissuefix"
     const val UA =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-    const val Mirror = "https://ghfast.top/"
+    /**
+     * 默认镜像前缀：空。
+     * 内置的第三方 ghproxy 域名在 1.2.2 已全部移除——实测 5 个已超时/502/域名失效，
+     * 这类死链点开就是广告页甚至博彩跳转页，不能再随程序分发。需要镜像由用户自己填。
+     */
+    const val Mirror = ""
 
-    val mirrorPresets = listOf(
-        "https://ghfast.top/",
-        "https://ghproxy.net/",
-        "https://gh-proxy.com/",
-        "https://mirror.ghproxy.com/",
-        "https://gh.llkk.cc/",
-        "https://ghp.ci/"
-    )
+    val mirrorPresets = emptyList<String>()
 
     /**
      * 这两个边缘 IP 对国内线路时好时坏（常见 504 / 直接打不开），
@@ -82,6 +91,24 @@ object Config {
     )
 
     fun isGithubHost(host: String): Boolean = domains.contains(host.lowercase())
+
+    /**
+     * 网页型域名：hosts / DNS 里指错一个 IP，浏览器就是整站 404 或打不开。
+     * 这些域名只认 200~399，403/404 一律不算可用。
+     */
+    fun isStrict(host: String): Boolean = when (host.lowercase()) {
+        "github.com", "api.github.com", "gist.github.com", "github.io" -> true
+        else -> false
+    }
+
+    /** 健康巡检只看这几个核心域名，保证一轮不会太慢 */
+    val coreDomains = listOf(
+        "github.com",
+        "api.github.com",
+        "codeload.github.com",
+        "raw.githubusercontent.com",
+        "github.githubassets.com"
+    )
 
     fun poolOf(host: String): List<String> = when (host) {
         "github.com" -> listOf(

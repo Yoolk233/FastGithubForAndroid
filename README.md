@@ -19,14 +19,14 @@ FastGithub 的 Android 版：把 GitHub 相关域名的解析结果换成**实�
 
 - **一键加速 / 停止**：启动时先测速择优，再拉起 VPN；停止即还原（关掉 VPN）。
 - **节点列表**：每个域名的优选 IP、延迟、状态（可用 / 受限 / 失败），支持重新测速。
-- **下载加速**：内置多个 GitHub 镜像前缀（`ghfast.top`、`ghproxy.net`、`gh-proxy.com`、`mirror.ghproxy.com`、`gh.llkk.cc`、`ghp.ci`），可切换并直接复制加速后的下载链接。
+- **下载加速**：**不内置任何第三方镜像域名**（1.2.2 起原内置的 6 个已全部失效，点开基本是广告页），需要镜像请自己填可信前缀；留空则链接原样输出。
 - **设置页**：加速状态（读的是 VPN 服务真实状态，不是界面自己记的）、系统 VPN 设置入口、运行日志（复制 / 清空）、常见问题、关于。
 - **结果缓存**：上次的测速结果会缓存，冷启动时先用缓存结果，再后台复测。
 - 已剔除 `20.205.243.166 / 20.205.243.167` 这两个国内线路经常 504 的边缘 IP。
 
 ## 版本
 
-- `versionName` = **1.2.1**，`versionCode` = 3
+- `versionName` = **1.2.2Criticalissuefix**，`versionCode` = 4
 - `minSdk` = 26（Android 8.0），`targetSdk` / `compileSdk` = 35
 - 应用包名 `fastgithub.android`
 

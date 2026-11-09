@@ -81,7 +81,7 @@ fun MirrorScreen(onNotify: (String) -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        SectionCard(title = "镜像源前缀", subtitle = "从预设里选，或直接改上面的输入框") {
+        SectionCard(title = "镜像源前缀", subtitle = "1.2.2 起不再内置第三方镜像（原内置的都测不通），请自己填可信前缀；留空＝不使用镜像") {
             OutlinedTextField(
                 value = prefix,
                 onValueChange = { prefix = it },

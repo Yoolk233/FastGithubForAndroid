@@ -52,6 +52,10 @@ class DnsVpnService : VpnService() {
     private val workers = Executors.newFixedThreadPool(6)
     private val cache = DnsCache()
 
+    /** DoH 熔断时间戳：公共 DoH 被网络屏蔽时不要每条查询都白等 */
+    @Volatile
+    private var dohDownUntil = 0L
+
     @Volatile
     private var running = false
 
@@ -186,7 +190,8 @@ class DnsVpnService : VpnService() {
                         Engine.quickMapAll(8) { n -> AppState.upsertNode(n) }
                     }.getOrDefault(emptyMap())
                     if (running && quick.isNotEmpty()) {
-                        AppState.mapping.value = AppState.mapping.value + quick
+                        // 快速结果已经过 TLS+HTTP 校验，直接替换掉可能已失效的上次缓存
+                        AppState.mapping.value = quick
                         AppState.detail.value =
                             "已接管 ${quick.size}/${Config.domains.size} 个域名（快速模式），正在精确优选…"
                         AppState.log("快速解析完成：${quick.size} 个域名已生效")
@@ -194,9 +199,16 @@ class DnsVpnService : VpnService() {
                 }
                 probeOnce()
                 while (running) {
-                    Thread.sleep(10 * 60 * 1000L)
+                    // 原来睡 10 分钟，且只在"mapping 没填满"时才复测——填满之后就永不检查，
+                    // 死节点会一直留在应答里。改成固定周期做健康巡检，失效即整轮重测。
+                    Thread.sleep(3 * 60 * 1000L)
                     if (!running) break
-                    if (AppState.mapping.value.size < Config.domains.size) probeOnce()
+                    val bad = runCatching { Engine.healthCheck(AppState.mapping.value) }
+                        .getOrDefault(emptyList())
+                    if (bad.isNotEmpty()) {
+                        AppState.log("巡检发现 " + bad.size + " 个核心域名失效（" + bad.joinToString("、") + "），重新优选…")
+                        probeOnce()
+                    }
                 }
             } catch (_: InterruptedException) {
             } catch (e: Exception) {
@@ -219,14 +231,16 @@ class DnsVpnService : VpnService() {
                 Engine.probeAll(6) { n -> AppState.upsertNode(n) }
             }.getOrDefault(emptyMap())
 
-            val usable = map.filterValues { it.usable && it.ip.isNotEmpty() }.mapValues { it.value.ip }
+            val usable = map.filterValues { it.acceptable && it.ip.isNotEmpty() }.mapValues { it.value.ip }
             if (!running) return
 
-            val merged = AppState.mapping.value + usable
-            AppState.mapping.value = merged
-            if (merged.isNotEmpty()) MappingCache.save(merged)
+            // 以本轮结果为准，不再和上一轮做加法：
+            // 探测失败的域名必须从 mapping 里移除、回退给真实 DNS，
+            // 否则死 IP 会一直留在应答里，界面写着"已加速"、网页却打不开。
+            AppState.mapping.value = usable
+            if (usable.isNotEmpty()) MappingCache.save(usable)
 
-            val count = merged.size
+            val count = usable.size
             AppState.detail.value = if (count > 0) {
                 "已接管 $count/${Config.domains.size} 个域名，浏览器可直接打开 GitHub"
             } else {
@@ -268,8 +282,12 @@ class DnsVpnService : VpnService() {
                 if (hit != null) {
                     DnsPacket.withId(hit, q.id)
                 } else {
-                    val upstream = forward(payload)
-                    val built = upstream ?: dohFallback(payload, payload.size, q)
+                    // 非 GitHub 域名：DoH 优先，明文 53 只做兜底。
+                    // 原来是"明文优先、DoH 兜底"，等于替开着「私人 DNS」的用户把保护拆掉——
+                    // 上游 DNS 被篡改时（家用路由器 / 机场客户端），其它网站的解析就会被喂成广告页。
+                    val built = dohPrefer(payload, payload.size, q)
+                        ?: forward(payload)
+                        ?: dohFallback(payload, payload.size, q)
                     if (built != null) {
                         cache.put(q.name, q.qtype, built)
                         built
@@ -294,6 +312,21 @@ class DnsVpnService : VpnService() {
                 output.flush()
             }
         }
+    }
+
+    /**
+     * 非 GitHub 域名优先走 DoH（阿里 / 腾讯），把"明文 53 被上游投毒"这条路堵死。
+     * 若公共 DoH 被网络屏蔽，熔断 5 分钟再回到明文 53，避免每条查询都白等超时。
+     */
+    private fun dohPrefer(payload: ByteArray, len: Int, q: DnsPacket.Query): ByteArray? {
+        if (q.qtype != 1) return null
+        if (System.currentTimeMillis() < dohDownUntil) return null
+        val ip = Net.dohFirstIp(q.name, 1200)
+        if (ip.isEmpty()) {
+            dohDownUntil = System.currentTimeMillis() + 5 * 60 * 1000L
+            return null
+        }
+        return DnsPacket.buildAResponse(payload, len, q, ip)
     }
 
     /** 依次试当前网络的系统 DNS，而不是硬编码一个 223.5.5.5 */

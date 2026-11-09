@@ -117,20 +117,44 @@ object Engine {
         var best: Node? = null
         for (i in 0 until limit) {
             val n = Net.verify(host, fast[i].first, 4000)
-            if (n.usable) {
+            // 网页型域名只认 200~399：WEAK(403/404) 既不能进 DNS，也不能算"加速成功"
+            if (n.acceptable) {
                 if (best == null) best = n
                 else if (n.state == "GOOD" && best.state != "GOOD") best = n
                 else if (n.state == best.state && n.ms < best.ms) best = n
             }
             if (n.state == "GOOD" && n.ms < 600) return n
         }
-        if (best == null && fast.isNotEmpty()) return Net.verify(host, fast[0].first, 5000)
+        if (best == null && fast.isNotEmpty()) {
+            // 兜底也只认通过校验的结果；硬写一个没验过的 IP 就是"已加速但打不开"
+            val fb = Net.verify(host, fast[0].first, 5000)
+            if (fb.acceptable) return fb
+        }
         if (best == null) {
             val nf = Node(host)
             nf.state = "FAIL"
             return nf
         }
         return best
+    }
+
+    /**
+     * 巡检当前 mapping 是否还能用：核心域名只要有一个打不开，就要整轮重测。
+     * 原实现只在「mapping 没填满」时才复测，填满之后（哪怕全是死 IP）就永远不再检查，
+     * 于是界面一直写着"加速已生效"，实际 GitHub 早就打不开了。
+     */
+    fun healthCheck(mapping: Map<String, String>): List<String> {
+        val bad = ArrayList<String>()
+        for (h in Config.coreDomains) {
+            val ip = mapping[h]
+            if (ip.isNullOrEmpty()) {
+                bad.add(h)
+                continue
+            }
+            val n = Net.verify(h, ip, 3000)
+            if (!n.acceptable) bad.add(h)
+        }
+        return bad
     }
 
     /** 快速路径：DoH + 并行 TCP 初筛，几百毫秒级给出一个能用 IP，保证开启后立刻生效 */
@@ -155,11 +179,13 @@ object Engine {
             }
         }
         pool.shutdownNow()
-        return if (bestIp.isEmpty()) {
-            Node(host).apply { state = "FAIL" }
-        } else {
-            Node(host, bestIp, bestMs, 0, "QUICK")
+        if (bestIp.isEmpty()) {
+            return Node(host).apply { state = "FAIL" }
         }
+        // TCP 能连 ≠ 页面能开：最快的那一个必须再过一次 TLS + HTTP 才算数，
+        // 否则 QUICK 状态会被拿去应答，出现"加速已生效、GitHub 404"。
+        val verified = Net.verify(host, bestIp, 2500)
+        return if (verified.acceptable) verified else Node(host).apply { state = "FAIL" }
     }
 
     fun quickMapAll(degree: Int, onNode: (Node) -> Unit): Map<String, String> {
@@ -170,7 +196,7 @@ object Engine {
             pool.execute {
                 try {
                     val n = quickPick(h)
-                    if (n.usable && n.ip.isNotEmpty()) res[h] = n.ip
+                    if (n.acceptable && n.ip.isNotEmpty()) res[h] = n.ip
                     runCatching { onNode(n) }
                 } catch (_: Exception) {
                 } finally {
